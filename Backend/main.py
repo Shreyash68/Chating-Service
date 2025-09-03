@@ -1,10 +1,12 @@
 from ast import Try
+from mimetypes import init
 
 from fastapi import FastAPI,WebSocket,WebSocketDisconnect,Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse
 from google.oauth2 import id_token
 from google.auth.transport import requests
-
+from models import User
 import httpx
 from db import db
 from settings.config import settings
@@ -12,7 +14,37 @@ import jwt
 from datetime import datetime, timezone, timedelta
 
 
-app = FastAPI()
+async def init_indexes():
+    await db["messages"].create_index([("room_id", 1), ("timestamp", -1)])
+    await db["rooms"].create_index("room_id")
+    await db["users"].create_index("email", unique=True)
+    await db["users"].create_index("google_id", unique=True)
+
+async def lifespan(app: FastAPI):
+    print("App startup")
+    await init_indexes()
+    yield
+    db.client.close()
+
+    print("App shutdown")
+
+app = FastAPI(lifespan=lifespan)
+
+origins = [
+    "http://localhost:5173",   # React dev server
+    "http://127.0.0.1:8000",
+    
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:8000"],      # Specific origins
+    allow_credentials=True,
+    allow_methods=["*"],        # Allow all HTTP methods (GET, POST, etc.)
+    allow_headers=["*"],
+)
+
+
 
 rooms = {}
 users = []
@@ -42,7 +74,7 @@ async def google_login():
 
 
 # --- Step 2: Callback from Google ---
-@app.get("/auth/callback")
+@app.get("/auth/google/callback")
 async def google_callback(request: Request):
     code = request.query_params.get("code")
     if not code:
@@ -76,18 +108,22 @@ async def google_callback(request: Request):
 
     # Step 5: Upsert user in Mongo
     google_id = idinfo["sub"]
+    print(idinfo)
     email = idinfo.get("email")
     name = idinfo.get("name")
 
     user = await users.find_one({"google_id": google_id})
+    print(user)
     if not user:
-        new_user = {
-            "google_id": google_id,
-            "email": email,
-            "name": name,
-            "created_at": datetime.now(timezone.utc)
-        }
-        result = await users.insert_one(new_user)
+        
+        new_user = User(
+        username=name,       # or whatever you want to store
+        email=email,
+        google_id=google_id,
+        profile_pic=idinfo["picture"],
+        created_at=datetime.now(timezone.utc)
+        )
+        result = await users.insert_one(new_user.model_dump())
         user_id = str(result.inserted_id)
     else:
         user_id = str(user["_id"])

@@ -6,6 +6,7 @@ class User(BaseModel):
     username: str
     email: str
     google_id: Optional[str] = None
+    profile_pic : Optional[str] = None
     created_at: datetime = datetime.now(timezone.utc)
 
 class Room(BaseModel):
